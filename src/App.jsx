@@ -84,6 +84,12 @@ const callClaude = async (messages, system, maxTokens = 1000) => {
 
   const apiKey = import.meta.env.DEV ? import.meta.env.VITE_GROQ_API_KEY : undefined;
 
+  console.log('API Call debug:', {
+    isDev: import.meta.env.DEV,
+    hasApiKey: !!apiKey,
+    endpoint: OPENAI_API
+  });
+
   
   const res = await fetch(OPENAI_API, {
     method: "POST",

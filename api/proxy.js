@@ -18,8 +18,18 @@ export default async function handler(req, res) {
   try {
     const groqApiKey = process.env.GROQ_API_KEY;
     
+    console.log('Proxy called - environment check:', {
+      hasKey: !!groqApiKey,
+      method: req.method,
+      url: req.url
+    });
+    
     if (!groqApiKey) {
-      res.status(500).json({ error: 'API key not configured' });
+      console.error('GROQ_API_KEY missing from environment');
+      res.status(500).json({ 
+        error: 'API key not configured',
+        debug: 'Environment variable GROQ_API_KEY is missing'
+      });
       return;
     }
     
