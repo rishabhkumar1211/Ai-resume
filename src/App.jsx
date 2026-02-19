@@ -82,7 +82,12 @@ const callClaude = async (messages, system, maxTokens = 1000) => {
     });
   }
 
-  const apiKey = import.meta.env.DEV ? import.meta.env.VITE_GROQ_API_KEY : null;
+  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+
+if (!apiKey) {
+  console.error("API key not found");
+}
+
   
   const res = await fetch(OPENAI_API, {
     method: "POST",
