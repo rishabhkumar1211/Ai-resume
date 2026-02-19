@@ -33,6 +33,12 @@ export default async function handler(req, res) {
       return;
     }
     
+    console.log('Making request to Groq API:', {
+      url: 'https://api.groq.com/openai/v1/chat/completions',
+      hasAuth: !!groqApiKey,
+      bodyPreview: JSON.stringify(req.body).substring(0, 200) + '...'
+    });
+    
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -51,7 +57,14 @@ export default async function handler(req, res) {
     
     res.status(200).json(data);
   } catch (error) {
-    console.error('Proxy error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Proxy error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    res.status(500).json({ 
+      error: 'Internal server error',
+      details: error.message 
+    });
   }
 }
