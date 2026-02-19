@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import Button from './Button';
-import EmptyState from './EmptyState';
+import '../styles/AIInterviewStyles.css';
+
 
 const AIInterview = ({ resumeText }) => {
   const [messages, setMessages] = useState([]);
@@ -10,636 +10,408 @@ const AIInterview = ({ resumeText }) => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [aiStatus, setAiStatus] = useState("idle");
   const [questionCount, setQuestionCount] = useState(0);
-  const [interviewState, setInterviewState] = useState("ready"); // ready, active, paused, completed
+  const [interviewState, setInterviewState] = useState("ready");
   const [timeElapsed, setTimeElapsed] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [feedback, setFeedback] = useState(null);
-  const [recognition, setRecognition] = useState(null);
-  const [askedQuestions, setAskedQuestions] = useState([]); // Track asked questions to avoid repetition
-  
+
+  const askedQuestionsRef = useRef([]);
+  const recognitionRef = useRef(null);
+  const isSpeakingRef = useRef(false);
+  const speakCancelledRef = useRef(false);
+  const questionCountRef = useRef(0);
+  const messagesRef = useRef([]);
+
   const chatRef = useRef();
+  // Sentinel div always stays at the bottom of the chat
+  const bottomSentinelRef = useRef();
   const timerRef = useRef(null);
-  const audioContext = useRef(null);
 
-  // Auto-scroll to bottom when messages change - Only affects chat container
-  const scrollToBottom = () => {
-    const chatContainer = chatRef.current;
-    if (chatContainer) {
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-    }
-  };
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { questionCountRef.current = questionCount; }, [questionCount]);
 
+  // ── RELIABLE AUTO-SCROLL ─────────────────────────────────────────────────
+  // Any time messages change OR isLoading changes, scroll the sentinel into view.
+  // Using scrollIntoView on a real DOM node is far more reliable than
+  // manually setting scrollTop with multiple timeouts.
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    if (bottomSentinelRef.current) {
+      bottomSentinelRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [messages, isLoading]);
+  // ─────────────────────────────────────────────────────────────────────────
 
-  // Extract user's name from resume
   const extractUserName = useCallback(() => {
     if (!resumeText) return "there";
-    
-    // Look for common name patterns in resume
     const namePatterns = [
-      /^([A-Z][a-z]+ [A-Z][a-z]+)/m,  // First Last at beginning
-      /(?:name|Name):\s*([A-Z][a-z]+ [A-Z][a-z]+)/,  // Name: First Last
-      /([A-Z][a-z]+ [A-Z][a-z]+)(?:\s+.*?){0,3}(?:resume|Resume|experience|Experience)/m  // Name before resume/experience
+      /^([A-Z][a-z]+ [A-Z][a-z]+)(?=\s+(?:\+|@|\.|,|$))/m,
+      /^(?:[^\n]*\n){0,2}([A-Z][a-z]+ [A-Z][a-z]+)(?=\s+\n)/m,
+      /(?:name|Name):\s*([A-Z][a-z]+ [A-Z][a-z]+)/,
     ];
-    
+    const excludeWords = ['software','engineer','developer','manager','analyst','designer',
+      'consultant','specialist','coordinator','administrator','assistant','director','lead','senior','junior'];
     for (const pattern of namePatterns) {
       const match = resumeText.match(pattern);
       if (match && match[1]) {
-        return match[1].split(' ')[0]; // Return first name only
+        const firstName = match[1].split(' ')[0].toLowerCase();
+        if (!excludeWords.some(w => firstName.includes(w))) return match[1].split(' ')[0];
       }
     }
-    
     return "there";
   }, [resumeText]);
 
-  // Extract skills and technologies from resume
-  const extractResumeSkills = useCallback(() => {
-    if (!resumeText) return { skills: [], technologies: [], experience: [] };
-    
-    const commonSkills = [
-      'javascript', 'react', 'node.js', 'python', 'java', 'html', 'css', 'sql', 'mongodb',
-      'express', 'angular', 'vue', 'typescript', 'git', 'docker', 'kubernetes', 'aws',
-      'azure', 'gcp', 'rest api', 'graphql', 'microservices', 'agile', 'scrum',
-      'machine learning', 'data analysis', 'devops', 'ci/cd', 'testing', 'unit testing',
-      'integration testing', 'frontend', 'backend', 'full stack', 'database design',
-      'system architecture', 'cloud computing', 'security', 'performance optimization'
-    ];
-    
-    const text = resumeText.toLowerCase();
-    const foundSkills = [];
-    const foundTechnologies = [];
-    const experienceYears = text.match(/(\d+)\s*(years?|yrs?)\s*(of\s*experience|experience)?/gi) || [];
-    
-    // Extract skills and technologies mentioned in resume
-    commonSkills.forEach(skill => {
-      if (text.includes(skill)) {
-        if (skill.includes('js') || skill.includes('react') || skill.includes('angular') || 
-            skill.includes('vue') || skill.includes('python') || skill.includes('java') ||
-            skill.includes('docker') || skill.includes('kubernetes') || skill.includes('aws')) {
-          foundTechnologies.push(skill);
-        } else {
-          foundSkills.push(skill);
-        }
-      }
-    });
-    
-    // Extract project keywords
-    const projectKeywords = text.match(/project|developed|built|created|implemented|designed|led/gi) || [];
-    
-    return {
-      skills: [...new Set(foundSkills)],
-      technologies: [...new Set(foundTechnologies)],
-      experience: experienceYears,
-      hasProjects: projectKeywords.length > 0
-    };
-  }, [resumeText]);
-
-  // AI Question Generator - creates adaptive, professional interviewer questions
-  const generateAIQuestion = useCallback((questionIndex, previousAnswers = []) => {
-    const resumeData = extractResumeSkills();
-    const lastAnswer = previousAnswers[previousAnswers.length - 1] || "";
-    const lastAnswerLower = lastAnswer.toLowerCase();
-    
-    // Analyze last answer for follow-up opportunities
-    const answerAnalysis = {
-      hasNumbers: /\d+/.test(lastAnswer),
-      hasTimeFrame: /\b(year|month|week|day|quarter|since|from|to)\b/i.test(lastAnswer),
-      hasTeamWords: /\b(team|collaborate|together|group|colleague)\b/i.test(lastAnswer),
-      hasProblemWords: /\b(problem|challenge|issue|difficult|complex)\b/i.test(lastAnswer),
-      hasSolutionWords: /\b(solved|fixed|implemented|created|developed|built)\b/i.test(lastAnswer),
-      hasResultWords: /\b(result|outcome|impact|improved|increased|decreased|saved)\b/i.test(lastAnswer),
-      isVague: lastAnswer.split(' ').length < 15,
-      isDetailed: lastAnswer.split(' ').length > 40
-    };
-    
-    // Helper function to check if question was already asked
-    const isQuestionAsked = (question) => {
-      return askedQuestions.some(asked => 
-        asked.toLowerCase().includes(question.toLowerCase().split(' ').slice(0, 3).join(' '))
-      );
-    };
-    
-    const questionGenerators = [
-      // Follow-up questions based on previous answer
-      () => {
-        if (questionIndex > 0 && answerAnalysis.hasProblemWords && !answerAnalysis.hasSolutionWords) {
-          const followUp = "That sounds challenging. How did you eventually solve that problem?";
-          if (!isQuestionAsked(followUp)) return followUp;
-        }
-        if (questionIndex > 0 && answerAnalysis.hasSolutionWords && !answerAnalysis.hasResultWords) {
-          const followUp = "Great solution! What was the measurable impact or result of your approach?";
-          if (!isQuestionAsked(followUp)) return followUp;
-        }
-        if (questionIndex > 0 && answerAnalysis.isVague) {
-          const followUp = "Could you provide more specific details about that experience?";
-          if (!isQuestionAsked(followUp)) return followUp;
-        }
-        if (questionIndex > 0 && answerAnalysis.hasTeamWords && !answerAnalysis.hasTimeFrame) {
-          const followUp = "How long did you work with that team, and what was your specific role?";
-          if (!isQuestionAsked(followUp)) return followUp;
-        }
-        return null;
-      },
-      
-      // Resume-specific technology deep dives (with variety)
-      () => {
-        if (resumeData.technologies.length > 0) {
-          const tech = resumeData.technologies[questionIndex % resumeData.technologies.length];
-          const techQuestions = [
-            `I see you have experience with ${tech}. Can you tell me about a project where you used ${tech} extensively?`,
-            `Regarding ${tech}, what's the most complex feature you've implemented?`,
-            `How did you get started with ${tech}, and what do you like most about it?`,
-            `What challenges have you faced when working with ${tech}?`,
-            `Can you compare ${tech} with other similar technologies you've used?`
-          ];
-          
-          // Find an unused question about this technology
-          for (const question of techQuestions) {
-            if (!isQuestionAsked(question)) {
-              return question;
-            }
-          }
-        }
-        return "What technologies are you most passionate about working with?";
-      },
-      
-      // Behavioral questions with STAR method focus (ensuring variety)
-      () => {
-        const scenarios = [
-          "a time you had to convince stakeholders to adopt your technical solution",
-          "a situation where you had to learn a completely new technology under pressure",
-          "an instance where you had to refactor legacy code",
-          "a time when you had to make a critical architectural decision",
-          "a situation where you had to handle a production emergency",
-          "a time you had to mentor a junior developer",
-          "a situation where you had to balance technical debt with new features"
-        ];
-        
-        const scenarioIndex = (questionIndex + askedQuestions.length) % scenarios.length;
-        const scenario = scenarios[scenarioIndex];
-        const question = `Tell me about ${scenario}. What was the situation, task, action, and result?`;
-        
-        if (!isQuestionAsked(question)) return question;
-        
-        // Fallback to unused scenario
-        for (let i = 0; i < scenarios.length; i++) {
-          const fallbackQuestion = `Tell me about ${scenarios[i]}. What was the situation, task, action, and result?`;
-          if (!isQuestionAsked(fallbackQuestion)) {
-            return fallbackQuestion;
-          }
-        }
-        
-        return question;
-      },
-      
-      // Technical depth questions
-      () => {
-        if (resumeData.technologies.length > 1) {
-          const tech1 = resumeData.technologies[0];
-          const tech2 = resumeData.technologies[1];
-          const question = `When building applications with ${tech1} and ${tech2}, how do you ensure optimal performance and security?`;
-          if (!isQuestionAsked(question)) return question;
-        }
-        return "How do you approach code optimization and performance tuning in your projects?";
-      },
-      
-      // Experience and growth questions (with variety)
-      () => {
-        if (resumeData.experience.length > 0) {
-          const expQuestions = [
-            `With ${resumeData.experience[0]} of experience, what's been your biggest professional growth area?`,
-            `What's the most valuable lesson you've learned in your ${resumeData.experience[0]} of experience?`,
-            `How has your approach to development evolved over your ${resumeData.experience[0]}?`
-          ];
-          
-          for (const question of expQuestions) {
-            if (!isQuestionAsked(question)) {
-              return question;
-            }
-          }
-        }
-        return "What technical or professional skills are you currently working to improve?";
-      },
-      
-      // Project-specific questions
-      () => {
-        if (resumeData.hasProjects) {
-          const projectQuestions = [
-            "Looking at your resume, which project challenged you the most technically, and what made it challenging?",
-            "Which project from your resume are you most proud of, and why?",
-            "Can you describe the architecture of a key project mentioned in your resume?"
-          ];
-          
-          for (const question of projectQuestions) {
-            if (!isQuestionAsked(question)) {
-              return question;
-            }
-          }
-        }
-        return "What project best demonstrates your problem-solving abilities?";
-      },
-      
-      // Culture and collaboration questions
-      () => {
-        const collabQuestions = [
-          "How do you contribute to code reviews and team knowledge sharing?",
-          "How do you handle disagreements with team members about technical decisions?",
-          "What's your approach to mentoring other developers?"
-        ];
-        
-        for (const question of collabQuestions) {
-          if (!isQuestionAsked(question)) {
-            return question;
-          }
-        }
-        
-        return collabQuestions[0];
-      },
-      
-      // Future-oriented questions
-      () => {
-        const futureQuestions = [
-          "Where do you see the biggest opportunities for innovation in your current tech stack?",
-          "What emerging technologies are you most excited about?",
-          "How do you plan to grow your technical skills in the next few years?"
-        ];
-        
-        for (const question of futureQuestions) {
-          if (!isQuestionAsked(question)) {
-            return question;
-          }
-        }
-        
-        return futureQuestions[0];
-      }
-    ];
-    
-    // Try follow-up questions first for more natural conversation
-    let question = questionGenerators[0]();
-    if (question) {
-      setAskedQuestions(prev => [...prev, question]);
-      return question;
-    }
-    
-    // Select appropriate question generator (skip the follow-up generator)
-    let generatorIndex = (questionIndex % (questionGenerators.length - 1)) + 1;
-    
-    // Prioritize resume-specific questions early, but ensure variety
-    if (questionIndex < 3 && resumeData.technologies.length > 0) {
-      generatorIndex = 1; // Technology questions first
-    } else if (questionIndex < 5 && resumeData.technologies.length > 0) {
-      generatorIndex = 3; // Technical depth questions
-    }
-    
-    // Try to get a question that hasn't been asked
-    let attempts = 0;
-    let finalQuestion = null;
-    
-    while (attempts < questionGenerators.length && !finalQuestion) {
-      finalQuestion = questionGenerators[generatorIndex]();
-      if (isQuestionAsked(finalQuestion)) {
-        finalQuestion = null;
-        generatorIndex = (generatorIndex % (questionGenerators.length - 1)) + 1;
-      }
-      attempts++;
-    }
-    
-    // If all else fails, use the generated question
-    if (!finalQuestion) {
-      finalQuestion = questionGenerators[generatorIndex]();
-    }
-    
-    setAskedQuestions(prev => [...prev, finalQuestion]);
-    return finalQuestion;
-  }, [extractResumeSkills, askedQuestions]);
-
-  // Timer management
-  useEffect(() => {
-    if (interviewState === "active" && !isPaused) {
-      timerRef.current = setInterval(() => {
-        setTimeElapsed(prev => prev + 1);
-      }, 1000);
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
-    }
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
-    };
-  }, [interviewState, isPaused]);
-
-  // Format time display
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // Text-to-speech with better voice handling
-  const speakText = useCallback((text) => {
-    if (!window.speechSynthesis) return;
-    
-    // Cancel any ongoing speech
-    window.speechSynthesis.cancel();
-    
-    setIsSpeaking(true);
-    setAiStatus("speaking");
-    
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 0.9;
-    utter.pitch = 1.05;
-    utter.volume = 0.9;
-    
-    // Try to find a good voice
-    const voices = window.speechSynthesis.getVoices();
-    const preferredVoice = voices.find(voice => 
-      voice.name.includes('Google') || voice.name.includes('Samantha') || voice.name.includes('Alex')
-    ) || voices[0];
-    
-    if (preferredVoice) {
-      utter.voice = preferredVoice;
-    }
-    
-    utter.onend = () => {
-      setIsSpeaking(false);
-      setAiStatus("idle");
-    };
-    
-    utter.onerror = () => {
-      setIsSpeaking(false);
-      setAiStatus("idle");
-    };
-    
-    window.speechSynthesis.speak(utter);
-  }, []);
-
-  // Enhanced speech recognition with better control
-  const startRecording = useCallback(() => {
-    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
-      alert('Speech recognition is not supported in your browser. Please use Chrome or Edge.');
+  const speakText = useCallback((text, onEnd = null) => {
+    if (!window.speechSynthesis) {
+      if (onEnd) onEnd();
       return;
     }
-    
-    // Only start if not already recording and interview is active
-    if (isRecording || interviewState !== "active" || isPaused) return;
-    
+
+    speakCancelledRef.current = true;
+    window.speechSynthesis.cancel();
+
+    const sentences = text.match(/[^.!?]+[.!?]*/g) || [text];
+
+    setTimeout(() => {
+      speakCancelledRef.current = false;
+
+      const voices = window.speechSynthesis.getVoices();
+      const preferredVoice = voices.find(v =>
+        v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('Alex')
+      ) || voices[0];
+
+      setIsSpeaking(true);
+      isSpeakingRef.current = true;
+      setAiStatus("speaking");
+
+      const keepAlive = setInterval(() => {
+        if (window.speechSynthesis.speaking) {
+          window.speechSynthesis.pause();
+          window.speechSynthesis.resume();
+        }
+      }, 10000);
+
+      let index = 0;
+
+      const done = () => {
+        clearInterval(keepAlive);
+        setIsSpeaking(false);
+        isSpeakingRef.current = false;
+        setAiStatus("idle");
+        if (onEnd && !speakCancelledRef.current) onEnd();
+      };
+
+      const speakNext = () => {
+        if (speakCancelledRef.current || index >= sentences.length) { done(); return; }
+        const sentence = sentences[index].trim();
+        if (!sentence) { index++; speakNext(); return; }
+
+        const utter = new SpeechSynthesisUtterance(sentence);
+        utter.rate = 0.88;
+        utter.pitch = 1.05;
+        utter.volume = 0.95;
+        if (preferredVoice) utter.voice = preferredVoice;
+        utter.onend = () => { index++; speakNext(); };
+        utter.onerror = (e) => { console.warn('TTS:', e.error); index++; speakNext(); };
+        window.speechSynthesis.speak(utter);
+      };
+
+      speakNext();
+    }, 200);
+  }, []);
+
+  const generateAIQuestion = useCallback(async (questionIndex, previousAnswers = []) => {
+    const askedList = askedQuestionsRef.current;
+
+    const systemPrompt = `You are Alex, a professional AI interviewer. You have been given a candidate's resume.
+
+Your job is to ask ONE smart, natural interview question that is perfectly tailored to this specific candidate.
+
+Before asking, internally assess the resume to understand:
+- Their professional field (engineering, marketing, HR, sales, SEO, finance, design, product, data, etc.)
+- Their seniority level (intern, junior, mid, senior, lead, manager, director, etc.)
+- Their key skills, tools, and technologies
+- Their work experience, companies, and roles
+- Any notable projects, achievements, or certifications
+
+Then pick the most appropriate question type for question number ${questionIndex + 1}, rotating naturally across these dimensions so the interview feels well-rounded and human:
+- Warm intro / background (use for Q1 only)
+- Specific skill or tool depth (how they use it, best practices, common pitfalls)
+- Past experience at a specific company or role
+- Behavioral / STAR situation (soft skills, teamwork, pressure, conflict)
+- Problem-solving or a challenge they've overcome
+- Domain knowledge (strategy, methodology, process relevant to their field)
+- Collaboration, communication, or cross-functional work
+- Growth, learning, or career goals
+- Hypothetical / situational scenario relevant to their field
+- Work style, culture fit, or values
+
+Hard rules:
+- Ask ONLY ONE question
+- 1-2 sentences maximum
+- Be SPECIFIC — reference their actual job titles, company names, real skills, real tools from the resume
+- Never be generic — "Tell me about a project" is bad; "You worked at [Company] on [X] — what was the biggest challenge there?" is good
+- Sound warm, natural, and conversational like a real human interviewer
+- Do NOT repeat or rephrase any previously asked question
+- Output ONLY the question — no preamble, no "Great!", no "Sure!", nothing else
+
+Previously asked questions (do not repeat any):
+${askedList.length > 0 ? askedList.map((q, i) => `${i + 1}. ${q}`).join('\n') : 'None yet'}
+${previousAnswers.length > 0 ? `\nCandidate's last answer: "${previousAnswers[previousAnswers.length - 1]}"` : ''}`;
+
+    try {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          max_tokens: 150,
+          temperature: 0.85,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: `Here is the candidate's resume:\n\n${resumeText}\n\nAsk question number ${questionIndex + 1}.` }
+          ]
+        })
+      });
+      const data = await response.json();
+      const question = data?.choices?.[0]?.message?.content?.trim();
+      if (question) {
+        askedQuestionsRef.current = [...askedQuestionsRef.current, question];
+        return question;
+      }
+    } catch (err) {
+      console.error("AI question error:", err);
+    }
+
+    const fallbacks = [
+      "Can you walk me through your background and what you've been working on recently?",
+      "What's a challenge you've overcome in your work that you're proud of?",
+      "Tell me about a skill you've developed that's been most valuable in your career.",
+      "How do you approach learning something new when you're thrown in the deep end?",
+      "Describe a situation where you had to work closely with others to deliver something difficult.",
+    ];
+    const fallback = fallbacks.find(q => !askedQuestionsRef.current.includes(q)) || fallbacks[0];
+    askedQuestionsRef.current = [...askedQuestionsRef.current, fallback];
+    return fallback;
+  }, [resumeText]);
+
+  const generateQuestionFeedback = useCallback(async (answer, questionAsked) => {
+    const qi = {
+      wordCount: answer.split(' ').length,
+      hasExamples: /\b(example|for instance|such as|specifically)\b/i.test(answer),
+      hasNumbers: /\d+/.test(answer),
+      hasTechnicalTerms: /\b(react|javascript|api|database|algorithm|framework|code|system|python|java|node|aws)\b/i.test(answer),
+      hasActionVerbs: /\b(developed|created|implemented|built|led|managed|optimized|solved|delivered|launched)\b/i.test(answer),
+      hasResults: /\b(result|outcome|impact|improved|increased|decreased|reduced|saved)\b/i.test(answer),
+      hasTeamWords: /\b(team|collaborate|together|group|colleague)\b/i.test(answer),
+    };
+
+    let score = 50;
+    if (qi.wordCount >= 20) score += 8;
+    if (qi.wordCount >= 40) score += 12;
+    if (qi.hasExamples) score += 15;
+    if (qi.hasNumbers) score += 10;
+    if (qi.hasTechnicalTerms) score += 10;
+    if (qi.hasActionVerbs) score += 10;
+    if (qi.hasResults) score += 15;
+    if (qi.hasTeamWords) score += 8;
+    if (qi.wordCount < 10) score -= 20;
+    if (qi.wordCount < 15) score -= 10;
+    score = Math.max(20, Math.min(score, 100));
+
+    const strengths = [];
+    const improvements = [];
+    if (qi.hasExamples) strengths.push("Provided specific examples");
+    if (qi.hasNumbers) strengths.push("Used quantifiable data");
+    if (qi.hasTechnicalTerms) strengths.push("Strong technical knowledge shown");
+    if (qi.hasActionVerbs) strengths.push("Action-oriented language");
+    if (qi.hasResults) strengths.push("Focused on outcomes");
+    if (qi.hasTeamWords) strengths.push("Highlighted collaboration");
+    if (!qi.hasExamples) improvements.push("Add specific examples");
+    if (!qi.hasNumbers) improvements.push("Include metrics or numbers");
+    if (!qi.hasResults) improvements.push("Focus on outcomes and impact");
+    if (qi.wordCount < 15) improvements.push("Give more detailed responses");
+    if (strengths.length === 0) strengths.push("Attempted the question");
+    if (improvements.length === 0) improvements.push("Keep practicing for more depth");
+
+    try {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          max_tokens: 200,
+          temperature: 0.7,
+          messages: [
+            {
+              role: "system",
+              content: "You are a professional interview coach giving brief, constructive feedback on a candidate's answer. Be encouraging but honest. 2-3 sentences max. Mention one strength and one improvement tip. Natural conversational tone. No bullet points. Sound warm and professional."
+            },
+            {
+              role: "user",
+              content: `Question: "${questionAsked}"\nAnswer: "${answer}"\n\nGive brief feedback.`
+            }
+          ]
+        })
+      });
+      const data = await response.json();
+      const aiResponse = data?.choices?.[0]?.message?.content?.trim();
+      return { response: aiResponse || "Good attempt! Try to be more specific with examples and results.", score, strengths, improvements };
+    } catch (err) {
+      console.error("AI feedback error:", err);
+    }
+
+    let response;
+    if (score >= 80) response = "Strong answer! Well-structured and specific.";
+    else if (score >= 60) response = "Good attempt. Adding specific examples and measurable outcomes will strengthen it.";
+    else response = "This needs more detail. Try the STAR method: Situation, Task, Action, Result.";
+    return { response, score, strengths, improvements };
+  }, []);
+
+  const startRecording = useCallback(() => {
+    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
+      alert('Speech recognition not supported. Please use Chrome or Edge.');
+      return;
+    }
+    if (recognitionRef.current || interviewState !== "active" || isPaused || isSpeakingRef.current) return;
+
     setIsRecording(true);
     setAiStatus("listening");
     setTranscript("");
-    
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const newRecognition = new SpeechRecognition();
-    
-    newRecognition.continuous = false; // Stop after one utterance
-    newRecognition.interimResults = true;
-    newRecognition.lang = "en-US";
-    newRecognition.maxAlternatives = 1;
-    
-    newRecognition.onresult = (e) => {
-      let final = "";
+    const rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+
+    let accumulatedFinal = "";
+
+    rec.onresult = (e) => {
       let interim = "";
-      
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const result = e.results[i];
-        if (result.isFinal) {
-          final += result[0].transcript;
-        } else {
-          interim += result[0].transcript;
-        }
+        if (e.results[i].isFinal) accumulatedFinal += e.results[i][0].transcript + " ";
+        else interim += e.results[i][0].transcript;
       }
-      
-      setTranscript(final + interim);
+      setTranscript((accumulatedFinal + interim).trim());
     };
-    
-    newRecognition.onerror = (e) => {
-      console.error('Speech recognition error:', e.error);
-      setIsRecording(false);
-      setAiStatus("idle");
-      if (e.error !== 'no-speech') {
-        alert('Speech recognition error: ' + e.error);
+
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed') {
+        alert('Microphone access denied. Please allow microphone permissions.');
+        recognitionRef.current = null;
+        setIsRecording(false);
+        setAiStatus("idle");
+      } else if (e.error === 'audio-capture') {
+        alert('No microphone found. Please connect a microphone.');
+        recognitionRef.current = null;
+        setIsRecording(false);
+        setAiStatus("idle");
       }
     };
-    
-    newRecognition.onend = () => {
-      setIsRecording(false);
-      setAiStatus("idle");
+
+    rec.onend = () => {
+      if (recognitionRef.current) {
+        try { rec.start(); } catch (e) { /* ignore */ }
+      } else {
+        setIsRecording(false);
+        setAiStatus("idle");
+      }
     };
-    
-    newRecognition.start();
-    setRecognition(newRecognition);
-  }, [isRecording, interviewState, isPaused]);
+
+    rec.start();
+    recognitionRef.current = rec;
+  }, [interviewState, isPaused]);
 
   const stopRecording = useCallback(() => {
-    if (recognition) {
-      recognition.stop();
-      setRecognition(null);
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
     }
     setIsRecording(false);
     setAiStatus("idle");
-  }, [recognition]);
-
-  // Generate contextual AI response
-  const generateAIResponse = useCallback((userAnswer, questionIndex) => {
-    const responses = [
-      "That's a good foundation. Can you elaborate on the specific challenges you faced?",
-      "Interesting approach. How would you optimize this for better performance?",
-      "Great explanation. What testing strategies did you implement?",
-      "I see. How did you handle edge cases in this scenario?",
-      "Excellent. Can you compare this with alternative approaches you considered?",
-      "That's insightful. What was the outcome of that situation?",
-      "Great example. What did you learn from that experience?",
-      "I understand. How would you handle a similar situation differently now?",
-      "Good reflection. How did this impact your team or project?",
-      "Valuable experience. How has this shaped your professional approach?",
-      "That's comprehensive. How did you balance technical and business requirements?",
-      "Good point. What metrics did you use to measure success?",
-      "Excellent. How did you collaborate with different stakeholders?",
-      "I see. What tools or technologies helped you achieve this?",
-      "Great insight. How would you scale this solution for larger teams?"
-    ];
-    
-    return responses[questionIndex % responses.length];
   }, []);
 
-  // Enhanced answer submission with immediate feedback
+  const askNextQuestion = useCallback(async () => {
+    setAiStatus("thinking");
+    const previousAnswers = messagesRef.current
+      .filter(msg => msg.role === 'user')
+      .map(msg => msg.content);
+
+    const nextQuestion = await generateAIQuestion(questionCountRef.current, previousAnswers);
+
+    setMessages(prev => [...prev, {
+      role: 'ai',
+      content: nextQuestion,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      isQuestion: true,
+      questionIndex: questionCountRef.current,
+    }]);
+
+    speakText(nextQuestion);
+  }, [speakText, generateAIQuestion]);
+
   const sendAnswer = useCallback(async () => {
     const msg = transcript.trim();
     if (!msg || isLoading) return;
-    
+
+    stopRecording();
     setIsLoading(true);
     setAiStatus("thinking");
-    
-    // Add user message
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setMessages(prev => [...prev, { 
-      role: 'user', 
-      content: msg, 
-      time: now,
-      questionIndex: questionCount 
-    }]);
-    
-    // Simulate AI processing time - Increased wait time
-    setTimeout(() => {
-      // Generate contextual feedback
-      const feedback = generateQuestionFeedback(msg, questionCount);
-      
-      setMessages(prev => [...prev, { 
-        role: 'ai', 
-        content: feedback.response, 
-        time: now,
-        questionIndex: questionCount,
-        feedback: feedback 
-      }]);
-      
-      setQuestionCount(prev => prev + 1);
-      setIsLoading(false);
-      setAiStatus("idle");
-      setTranscript("");
-      
-      // Ask next question after a longer delay (continuous interview)
-      setTimeout(() => {
-        askNextQuestion();
-      }, 4000); // Increased from 3000ms to 4000ms
-    }, 2000); // Increased from 1500ms to 2000ms
-  }, [transcript, isLoading, questionCount]);
 
-  // Generate question-specific feedback with detailed improvement guidance
-  const generateQuestionFeedback = (answer, questionIndex) => {
-    const answerLower = answer.toLowerCase();
-    let score = 50; // Base score
-    let strengths = [];
-    let improvements = [];
-    let response = "";
-    
-    // Comprehensive answer analysis
-    const qualityIndicators = {
-      length: answer.length,
-      wordCount: answer.split(' ').length,
-      sentenceCount: answer.split(/[.!?]+/).length,
-      hasExamples: /\b(example|for instance|such as|like|specifically|particularly)\b/i.test(answer),
-      hasNumbers: /\d+/.test(answer),
-      hasPercentages: /\d+%/.test(answer),
-      hasTimeFrames: /\b(year|month|week|day|quarter|since|from|to)\b/i.test(answer),
-      hasTechnicalTerms: /\b(react|javascript|api|database|algorithm|framework|library|code|programming|development|system|design|architecture|node|python|java)\b/i.test(answer),
-      hasActionVerbs: /\b(developed|created|implemented|designed|built|led|managed|optimized|improved|solved|handled|achieved|delivered|launched)\b/i.test(answer),
-      hasResults: /\b(result|outcome|impact|achieved|improved|increased|decreased|reduced|saved|generated|cut)\b/i.test(answer),
-      hasTeamWords: /\b(team|collaborate|together|group|colleague|pair|shared)\b/i.test(answer),
-      hasProblemWords: /\b(problem|challenge|issue|difficult|complex|bug|error)\b/i.test(answer),
-      hasSolutionWords: /\b(solved|fixed|implemented|created|developed|built|resolved|addressed)\b/i.test(answer),
-      hasBusinessImpact: /\b(revenue|profit|cost|budget|customer|user|client|business|market)\b/i.test(answer),
-      hasLearningWords: /\b(learned|discovered|realized|found|gained|mastered)\b/i.test(answer),
-      isVague: answer.split(' ').length < 15,
-      isTooBrief: answer.split(' ').length < 10,
-      isWellStructured: answer.split(' ').length >= 25 && answer.split(/[.!?]+/).length >= 3
-    };
-    
-    // Advanced scoring algorithm
-    if (qualityIndicators.wordCount >= 20) score += 8;
-    if (qualityIndicators.wordCount >= 40) score += 12;
-    if (qualityIndicators.isWellStructured) score += 10;
-    if (qualityIndicators.hasExamples) score += 15;
-    if (qualityIndicators.hasNumbers) score += 8;
-    if (qualityIndicators.hasPercentages) score += 12;
-    if (qualityIndicators.hasTimeFrames) score += 8;
-    if (qualityIndicators.hasTechnicalTerms) score += 10;
-    if (qualityIndicators.hasActionVerbs) score += 10;
-    if (qualityIndicators.hasResults) score += 15;
-    if (qualityIndicators.hasTeamWords) score += 8;
-    if (qualityIndicators.hasBusinessImpact) score += 12;
-    if (qualityIndicators.hasLearningWords) score += 5;
-    
-    // Penalties for poor answers
-    if (qualityIndicators.isTooBrief) score -= 20;
-    if (qualityIndicators.isVague) score -= 10;
-    if (!qualityIndicators.hasActionVerbs && qualityIndicators.wordCount > 20) score -= 5;
-    
-    // Cap score at 100 and minimum at 20
-    score = Math.max(20, Math.min(score, 100));
-    
-    // Generate specific strengths
-    if (qualityIndicators.isWellStructured) strengths.push("Well-structured, comprehensive answer");
-    if (qualityIndicators.hasExamples) strengths.push("Provided specific examples");
-    if (qualityIndicators.hasNumbers) strengths.push("Used quantifiable data and metrics");
-    if (qualityIndicators.hasPercentages) strengths.push("Included percentage-based results");
-    if (qualityIndicators.hasTechnicalTerms) strengths.push("Demonstrated strong technical knowledge");
-    if (qualityIndicators.hasActionVerbs) strengths.push("Used action-oriented language");
-    if (qualityIndicators.hasResults) strengths.push("Focused on measurable results and impact");
-    if (qualityIndicators.hasTeamWords) strengths.push("Highlighted teamwork and collaboration");
-    if (qualityIndicators.hasBusinessImpact) strengths.push("Connected work to business outcomes");
-    if (qualityIndicators.hasLearningWords) strengths.push("Showed growth and learning mindset");
-    
-    // Generate specific, actionable improvements
-    if (qualityIndicators.isTooBrief) improvements.push("Provide much more detailed responses (aim for 20+ words)");
-    if (qualityIndicators.isVague) improvements.push("Add specific details and concrete examples");
-    if (!qualityIndicators.hasExamples) improvements.push("Include specific examples from your experience");
-    if (!qualityIndicators.hasNumbers) improvements.push("Add metrics, numbers, or quantifiable results");
-    if (!qualityIndicators.hasActionVerbs) improvements.push("Use more action verbs (developed, implemented, solved)");
-    if (!qualityIndicators.hasResults) improvements.push("Focus on outcomes and impact of your work");
-    if (!qualityIndicators.hasTimeFrames && qualityIndicators.wordCount > 15) improvements.push("Include timeframes to give context");
-    if (!qualityIndicators.hasBusinessImpact && qualityIndicators.wordCount > 20) improvements.push("Connect your work to business value");
-    if (qualityIndicators.wordCount > 15 && !qualityIndicators.hasTechnicalTerms) improvements.push("Include relevant technical details");
-    
-    // Ensure we have at least one strength and improvement
-    if (strengths.length === 0) strengths.push("Attempted to answer the question");
-    if (improvements.length === 0) improvements.push("Continue practicing with more specific examples");
-    
-    // Generate contextual response based on score and content
-    if (score >= 90) {
-      response = "Outstanding answer! This is exactly what interviewers look for - comprehensive, specific, and results-oriented.";
-    } else if (score >= 80) {
-      response = "Excellent response! Your answer was strong and well-structured. With a few more specific details, it would be perfect.";
-    } else if (score >= 70) {
-      response = "Good answer with solid points. To make it stronger, focus on adding more specific examples and measurable results.";
-    } else if (score >= 60) {
-      response = "Decent attempt. Your answer has some good elements but needs more detail, structure, and specific examples to be more effective.";
-    } else if (score >= 50) {
-      response = "Your answer needs significant improvement. Try to provide more specific details, structure your thoughts better, and include relevant examples.";
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const lastQuestion = [...messagesRef.current].reverse().find(m => m.isQuestion)?.content || "";
+
+    setMessages(prev => [...prev, {
+      role: 'user',
+      content: msg,
+      time: now,
+      questionIndex: questionCountRef.current,
+    }]);
+
+    const fb = await generateQuestionFeedback(msg, lastQuestion);
+
+    setMessages(prev => [...prev, {
+      role: 'ai',
+      content: fb.response,
+      time: now,
+      questionIndex: questionCountRef.current,
+      feedback: fb,
+    }]);
+
+    setQuestionCount(prev => prev + 1);
+    setIsLoading(false);
+    setAiStatus("idle");
+    setTranscript("");
+
+    speakText(fb.response, () => {
+      setTimeout(() => askNextQuestion(), 800);
+    });
+  }, [transcript, isLoading, stopRecording, askNextQuestion, generateQuestionFeedback, speakText]);
+
+  useEffect(() => {
+    if (interviewState === "active" && !isPaused) {
+      timerRef.current = setInterval(() => setTimeElapsed(prev => prev + 1), 1000);
     } else {
-      response = "This answer needs work. Focus on providing specific examples, using action verbs, and including measurable results. Consider using the STAR method: Situation, Task, Action, Result.";
+      if (timerRef.current) clearInterval(timerRef.current);
     }
-    
-    return {
-      response,
-      score,
-      strengths,
-      improvements,
-      detailedAnalysis: {
-        wordCount: qualityIndicators.wordCount,
-        hasMetrics: qualityIndicators.hasNumbers || qualityIndicators.hasPercentages,
-        hasExamples: qualityIndicators.hasExamples,
-        isWellStructured: qualityIndicators.isWellStructured
-      }
-    };
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [interviewState, isPaused]);
+
+  const formatTime = (seconds) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
   };
 
-  // Ask next question - Increased delay for better user experience
-  const askNextQuestion = useCallback(() => {
-    // Get previous answers for context
-    const previousAnswers = messages
-      .filter(msg => msg.role === 'user')
-      .map(msg => msg.content);
-    
-    // Generate AI question based on context
-    const nextQuestion = generateAIQuestion(questionCount, previousAnswers);
-    
-    setTimeout(() => {
-      speakText(nextQuestion);
-      setMessages(prev => [...prev, { 
-        role: 'ai', 
-        content: nextQuestion, 
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        isQuestion: true 
-      }]);
-    }, 1000); // Increased delay before speaking
-  }, [questionCount, speakText, generateAIQuestion, messages]);
-
-  // Start interview
   const startInterview = useCallback(() => {
+    askedQuestionsRef.current = [];
+    speakCancelledRef.current = false;
     setMessages([]);
     setQuestionCount(0);
     setTranscript("");
@@ -647,26 +419,24 @@ const AIInterview = ({ resumeText }) => {
     setInterviewState("active");
     setIsPaused(false);
     setFeedback(null);
-    setAskedQuestions([]); // Reset question history for fresh start
-    
+
     const userName = extractUserName();
     const greeting = `Hello ${userName}! I'm Alex, your AI interviewer. Let's have a conversational interview to get to know you better and discuss your experience. We'll go through some questions at your pace.`;
-    
+
     setTimeout(() => {
-      setMessages([{ 
-        role: 'ai', 
-        content: greeting, 
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
+      setMessages([{
+        role: 'ai',
+        content: greeting,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       }]);
-      
       setTimeout(() => {
-        speakText(greeting);
-        setTimeout(() => askNextQuestion(), 3000);
+        speakText(greeting, () => {
+          setTimeout(() => askNextQuestion(), 800);
+        });
       }, 400);
-    }, 1000);
+    }, 500);
   }, [speakText, askNextQuestion, extractUserName]);
 
-  // Pause/Resume interview
   const togglePause = useCallback(() => {
     if (isPaused) {
       setIsPaused(false);
@@ -674,45 +444,29 @@ const AIInterview = ({ resumeText }) => {
     } else {
       setIsPaused(true);
       setAiStatus("paused");
-      if (isSpeaking) {
-        window.speechSynthesis.cancel();
-        setIsSpeaking(false);
-      }
-      if (isRecording) {
-        stopRecording();
-      }
+      speakCancelledRef.current = true;
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      isSpeakingRef.current = false;
+      stopRecording();
     }
-  }, [isPaused, isSpeaking, isRecording, stopRecording]);
+  }, [isPaused, stopRecording]);
 
-  // End interview and provide feedback
   const endInterview = useCallback(() => {
     setInterviewState("completed");
     setAiStatus("completed");
-    
-    if (isSpeaking) {
-      window.speechSynthesis.cancel();
-    }
-    if (isRecording) {
-      stopRecording();
-    }
-    
-    // Calculate actual feedback score based on question performance
-    const questionMessages = messages.filter(msg => msg.role === 'ai' && msg.feedback && msg.feedback.score);
-    let feedbackScore;
-    
-    if (questionMessages.length > 0) {
-      // Calculate average of all question scores
-      const totalScore = questionMessages.reduce((sum, msg) => sum + msg.feedback.score, 0);
-      feedbackScore = Math.round(totalScore / questionMessages.length);
-    } else {
-      // Fallback for edge cases
-      feedbackScore = 65;
-    }
-    
-    // Generate dynamic strengths and improvements based on performance
-    const strengths = [];
-    const improvements = [];
-    
+    speakCancelledRef.current = true;
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+    isSpeakingRef.current = false;
+    stopRecording();
+
+    const qMsgs = messagesRef.current.filter(m => m.role === 'ai' && m.feedback?.score);
+    const feedbackScore = qMsgs.length > 0
+      ? Math.round(qMsgs.reduce((s, m) => s + m.feedback.score, 0) / qMsgs.length)
+      : 65;
+
+    const strengths = [], improvements = [];
     if (feedbackScore >= 80) {
       strengths.push("Strong overall performance", "Well-structured responses");
     } else if (feedbackScore >= 60) {
@@ -720,24 +474,20 @@ const AIInterview = ({ resumeText }) => {
       improvements.push("Add more specific examples", "Include quantifiable results");
     } else {
       strengths.push("Attempted all questions");
-      improvements.push("Provide more detailed responses", "Practice STAR method", "Add specific examples and metrics");
+      improvements.push("Provide more detailed responses", "Practice the STAR method", "Add specific examples and metrics");
     }
-    
-    // Add common improvement suggestions
-    if (feedbackScore < 85) {
-      improvements.push("Include more technical details where relevant");
-    }
-    
-    setFeedback({
-      score: feedbackScore,
-      strengths,
-      improvements,
-      duration: formatTime(timeElapsed)
-    });
-  }, [timeElapsed, isSpeaking, isRecording, stopRecording, messages]);
+    if (feedbackScore < 85) improvements.push("Include more technical details where relevant");
 
-  // Reset interview
+    setFeedback({ score: feedbackScore, strengths, improvements, duration: formatTime(timeElapsed) });
+  }, [timeElapsed, stopRecording]);
+
   const resetInterview = useCallback(() => {
+    askedQuestionsRef.current = [];
+    speakCancelledRef.current = true;
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+    isSpeakingRef.current = false;
+    stopRecording();
     setMessages([]);
     setQuestionCount(0);
     setTranscript("");
@@ -745,243 +495,342 @@ const AIInterview = ({ resumeText }) => {
     setInterviewState("ready");
     setIsPaused(false);
     setFeedback(null);
-    setAskedQuestions([]); // Reset question history
     setAiStatus("idle");
-    if (isSpeaking) {
-      window.speechSynthesis.cancel();
-    }
-    if (isRecording) {
-      stopRecording();
-    }
-  }, [isSpeaking, isRecording, stopRecording]);
+  }, [stopRecording]);
 
-  // Manual scroll - let users control their own view
-  // useEffect(() => {
-  //   if (chatRef.current) {
-  //     chatRef.current.scrollTop = chatRef.current.scrollHeight;
-  //   }
-  // }, [messages]);
+  const getScoreColor = (score) => {
+    if (score >= 80) return 'score-high';
+    if (score >= 60) return 'score-mid';
+    return 'score-low';
+  };
+
+  const getScoreHex = (score) => {
+    if (score >= 80) return '#22c55e';
+    if (score >= 60) return '#f59e0b';
+    return '#ef4444';
+  };
 
   if (!resumeText) {
     return (
-      <div className="card interactive">
-        <EmptyState 
-          icon="🎤"
-          title="No Resume Uploaded"
-          description="Upload your resume first to start personalized AI interview practice"
-        />
+      <div className="ai-interview">
+        <div className="ai-empty-state">
+          <div className="ai-empty-icon">🎙️</div>
+          <h3 className="ai-empty-title">No Resume Uploaded</h3>
+          <p className="ai-empty-desc">Upload your resume first to start your AI-powered interview</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="card interactive hover-reveal">
-      <div className="card-header">
-        <div className="card-icon">🎤</div>
-        <div>
-          <h2>AI Interview Practice</h2>
-          <p>Professional interview simulation with real-time feedback</p>
+    <div className="ai-interview">
+
+      {/* ── Header ── */}
+      <div className="ai-header">
+        <div className="ai-header-left">
+          <div className="ai-logo-mark">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" fill="#6366f1"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" stroke="#6366f1" strokeWidth="2" fill="none" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <div>
+            <div className="ai-header-title">AI Interview</div>
+            <div className="ai-header-sub">Powered by Alex</div>
+          </div>
         </div>
-        <div className="interview-stats">
-          <span className="stat-badge">{formatTime(timeElapsed)}</span>
-          <span className="stat-badge">Q{questionCount}</span>
+
+        <div className="ai-header-right">
+          <div className="ai-stat-pill">
+            <span className="ai-stat-icon">⏱</span>
+            <span className="ai-stat-val">{formatTime(timeElapsed)}</span>
+          </div>
+          <div className="ai-stat-pill">
+            <span className="ai-stat-icon">Q</span>
+            <span className="ai-stat-val">{questionCount}</span>
+          </div>
+          <div className={`ai-status-badge ai-status-${aiStatus}`}>
+            {aiStatus === 'idle' && interviewState === 'ready' && 'Ready'}
+            {aiStatus === 'idle' && interviewState === 'active' && 'Waiting'}
+            {aiStatus === 'speaking' && '◉ Speaking'}
+            {aiStatus === 'listening' && '◉ Listening'}
+            {aiStatus === 'thinking' && '◌ Thinking'}
+            {aiStatus === 'paused' && '⏸ Paused'}
+            {aiStatus === 'completed' && '✓ Done'}
+          </div>
         </div>
       </div>
 
-      <div className="interview-container">
-        {/* AI Interviewer Stage */}
-        <div className="ai-stage">
-          <div className={`avatar-circle ${aiStatus}`}>
-            {interviewState === "completed" ? "✅" : "🤖"}
+      {/* ── Main ── */}
+      <div className="ai-main">
+
+        {/* Avatar Panel */}
+        <div className="ai-avatar-panel">
+          <div className="ai-avatar-wrap">
+            {aiStatus === 'speaking' && (
+              <>
+                <div className="ai-pulse-ring ai-pulse-ring--1" />
+                <div className="ai-pulse-ring ai-pulse-ring--2" />
+              </>
+            )}
+            <div className={`ai-avatar ${interviewState === 'completed' ? 'ai-avatar--done' : ''} ai-avatar--${aiStatus}`}>
+              {interviewState === 'completed' ? '✓' : 'A'}
+            </div>
           </div>
-          <div className="ai-name">Alex · AI Interviewer</div>
-          <div className={`ai-status ${aiStatus}`}>
-            {aiStatus === "idle" && interviewState === "ready" && "● Ready to start"}
-            {aiStatus === "idle" && interviewState === "active" && "● Ready for answer"}
-            {aiStatus === "speaking" && "◉ Speaking..."}
-            {aiStatus === "listening" && "◉ Listening..."}
-            {aiStatus === "thinking" && "◌ Thinking..."}
-            {aiStatus === "paused" && "⏸ Paused"}
-            {aiStatus === "completed" && "✓ Interview Complete"}
-            {aiStatus === "error" && "⚠ Error occurred"}
+
+          <div className="ai-alex-name">Alex</div>
+          <div className="ai-alex-role">AI Interviewer</div>
+
+          {/* Voice wave bars */}
+          <div className="ai-wave">
+            {[0, 0.1, 0.2, 0.15, 0.3, 0.05, 0.25, 0.1, 0.2, 0.15].map((delay, i) => (
+              <div
+                key={i}
+                className={`ai-wave-bar ${aiStatus === 'speaking' ? 'ai-wave-bar--speaking' : ''} ${aiStatus === 'listening' ? 'ai-wave-bar--listening' : ''}`}
+                style={{ animationDelay: `${delay}s` }}
+              />
+            ))}
           </div>
-          
-          {/* Interview Controls */}
-          {interviewState === "active" && (
-            <div className="interview-controls-mini">
-              <button onClick={togglePause} className="control-btn">
-                {isPaused ? "▶" : "⏸"}
+
+          {interviewState === 'active' && (
+            <div className="ai-mini-controls">
+              <button className="ai-mini-btn" onClick={togglePause} title={isPaused ? 'Resume' : 'Pause'}>
+                {isPaused ? '▶' : '⏸'}
               </button>
-              <button onClick={endInterview} className="control-btn danger">
+              <button className="ai-mini-btn ai-mini-btn--danger" onClick={endInterview} title="End Interview">
                 ⏹
               </button>
             </div>
           )}
         </div>
 
-        {/* Chat Messages */}
-        <div className="chat-body">
-          <div className="chat-messages" ref={chatRef}>
+        {/* Chat Area */}
+        <div className="ai-chat-area">
+          <div className="ai-chat-scroll" ref={chatRef}>
+
+            {messages.length === 0 && interviewState === 'ready' && (
+              <div className="ai-chat-empty">
+                <div className="ai-chat-empty-icon">💬</div>
+                <p className="ai-chat-empty-text">Your interview conversation will appear here</p>
+              </div>
+            )}
+
             {messages.map((msg, i) => (
-              <div key={i} className={`msg msg-${msg.role} ${msg.isQuestion ? 'question' : ''}`}>
-                <div className="msg-avatar">
-                  {msg.role === 'ai' ? '🤖' : '👤'}
+              <div
+                key={i}
+                className={`ai-msg-row ai-msg-row--${msg.role} ${msg.role === 'ai' ? 'ai-anim-up' : 'user-anim-up'}`}
+              >
+                <div className={`ai-msg-avatar ai-msg-avatar--${msg.role}`}>
+                  {msg.role === 'ai' ? 'A' : 'U'}
                 </div>
-                <div>
-                  <div className="msg-bubble">
+
+                <div className="ai-msg-body">
+                  {msg.isQuestion && (
+                    <div className="ai-q-badge">Q{(msg.questionIndex ?? 0) + 1}</div>
+                  )}
+
+                  <div className={`ai-bubble ai-bubble--${msg.role} ${msg.isQuestion ? 'ai-bubble--question' : ''}`}>
                     {msg.content}
-                    {msg.isQuestion && <span className="question-indicator">Q{msg.questionIndex + 1}</span>}
                   </div>
-                  
-                  {/* Show feedback for user answers */}
+
                   {msg.role === 'ai' && msg.feedback && (
-                    <div className="answer-feedback">
-                      <div className="feedback-score">
-                        <span className="score-label">Answer Score:</span>
-                        <span className="score-value">{msg.feedback.score}%</span>
-                      </div>
-                      <div className="feedback-details">
-                        <div className="feedback-item">
-                          <span className="feedback-label">✅ Strengths:</span>
-                          <span className="feedback-text">{msg.feedback.strengths.join(", ")}</span>
+                    <div className="ai-feedback-card">
+                      <div className="ai-feedback-top">
+                        <div
+                          className="ai-score-ring"
+                          style={{
+                            background: `conic-gradient(${getScoreHex(msg.feedback.score)} ${msg.feedback.score}%, #1e293b ${msg.feedback.score}%)`,
+                          }}
+                        >
+                          <div className="ai-score-inner">
+                            <span className={`ai-score-num ${getScoreColor(msg.feedback.score)}`}>
+                              {msg.feedback.score}
+                            </span>
+                          </div>
                         </div>
-                        <div className="feedback-item">
-                          <span className="feedback-label">📈 Improvements:</span>
-                          <span className="feedback-text">{msg.feedback.improvements.join(", ")}</span>
+                        <div className="ai-feedback-tags">
+                          <div className="ai-feedback-row">
+                            {msg.feedback.strengths.slice(0, 2).map((s, j) => (
+                              <span key={j} className="ai-tag ai-tag--strength">✓ {s}</span>
+                            ))}
+                          </div>
+                          <div className="ai-feedback-row">
+                            {msg.feedback.improvements.slice(0, 1).map((imp, j) => (
+                              <span key={j} className="ai-tag ai-tag--improve">↑ {imp}</span>
+                            ))}
+                          </div>
                         </div>
                       </div>
                     </div>
                   )}
-                  
-                  {msg.time && (
-                    <div className="msg-time">{msg.time}</div>
-                  )}
+
+                  {msg.time && <div className="ai-msg-time">{msg.time}</div>}
                 </div>
               </div>
             ))}
-            
+
             {isLoading && (
-              <div className="msg msg-ai">
-                <div className="msg-avatar">🤖</div>
-                <div className="msg-bubble">
-                  <div className="typing-indicator">
-                    <div className="typing-dot"></div>
-                    <div className="typing-dot"></div>
-                    <div className="typing-dot"></div>
+              <div className="ai-msg-row ai-msg-row--ai ai-anim-up">
+                <div className="ai-msg-avatar ai-msg-avatar--ai">A</div>
+                <div className="ai-bubble ai-bubble--ai">
+                  <div className="ai-typing">
+                    <div className="ai-typing-dot" style={{ animationDelay: '0s' }} />
+                    <div className="ai-typing-dot" style={{ animationDelay: '0.2s' }} />
+                    <div className="ai-typing-dot" style={{ animationDelay: '0.4s' }} />
                   </div>
                 </div>
               </div>
             )}
+
+            {/* ── SCROLL SENTINEL ─────────────────────────────
+                This invisible div always sits at the very bottom
+                of the message list. scrollIntoView() on it
+                guarantees the chat scrolls down on every update.
+            ─────────────────────────────────────────────── */}
+            <div ref={bottomSentinelRef} style={{ height: 1, flexShrink: 0 }} />
+          </div>
+
+          {/* Input Area */}
+          {interviewState === 'active' && (
+            <div className="ai-input-area">
+              <div className={`ai-transcript-box ${isRecording ? 'ai-transcript-box--recording' : ''} ${isSpeaking ? 'ai-transcript-box--speaking' : ''}`}>
+                {isRecording && (
+                  <div className="ai-rec-badge">
+                    <div className="ai-rec-dot" />
+                    REC
+                  </div>
+                )}
+                <div className="ai-transcript-label">
+                  {isPaused ? 'Paused' : isRecording ? 'Listening...' : isSpeaking ? 'Alex is speaking...' : 'Your answer'}
+                </div>
+                <div className={transcript ? 'ai-transcript-text' : 'ai-transcript-placeholder'}>
+                  {transcript || (
+                    isRecording ? "Speak clearly — I'm listening..."
+                    : isPaused ? 'Click ▶ to resume the interview'
+                    : isSpeaking ? 'Wait for Alex to finish...'
+                    : 'Press the mic button or type your answer below'
+                  )}
+                </div>
+              </div>
+
+              <div className="ai-input-row">
+                <button
+                  className={`ai-mic-btn ${isRecording ? 'ai-mic-btn--recording' : ''}`}
+                  onClick={isRecording ? stopRecording : startRecording}
+                  disabled={isLoading || isPaused || isSpeaking}
+                  title={isSpeaking ? 'Wait for Alex' : isRecording ? 'Stop recording' : 'Start recording'}
+                >
+                  {isRecording ? (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                      <rect x="6" y="6" width="12" height="12" rx="2" />
+                    </svg>
+                  ) : (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" fill="white"/>
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                      <line x1="12" y1="19" x2="12" y2="23" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                    </svg>
+                  )}
+                </button>
+
+                <button
+                  className="ai-send-btn"
+                  onClick={sendAnswer}
+                  disabled={isLoading || !transcript.trim() || isPaused}
+                >
+                  {isLoading ? (
+                    <>
+                      <div className="ai-spinner" />
+                      Thinking...
+                    </>
+                  ) : (
+                    <>
+                      Send
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+                        <line x1="22" y1="2" x2="11" y2="13" />
+                        <polygon points="22 2 15 22 11 13 2 9 22 2" fill="white" stroke="none"/>
+                      </svg>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Completed Panel ── */}
+      {interviewState === 'completed' && feedback && (
+        <div className="ai-completed">
+          <div className="ai-completed-header">
+            <div className="ai-completed-title">Interview Complete</div>
+            <div className="ai-completed-score-wrap">
+              <div
+                className="ai-score-ring ai-score-ring--lg"
+                style={{
+                  background: `conic-gradient(${getScoreHex(feedback.score)} ${feedback.score}%, #1e293b ${feedback.score}%)`,
+                }}
+              >
+                <div className="ai-score-inner ai-score-inner--lg">
+                  <span className={`ai-score-num--lg ${getScoreColor(feedback.score)}`}>
+                    {feedback.score}
+                  </span>
+                  <span className="ai-score-denom">/100</span>
+                </div>
+              </div>
+              <div>
+                <div className="ai-score-label">Performance Score</div>
+                <div className="ai-score-meta">{feedback.duration} · {questionCount} questions</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="ai-completed-grid">
+            <div className="ai-completed-card">
+              <div className="ai-completed-card-title">
+                <span className="color-green">✓</span> Strengths
+              </div>
+              {feedback.strengths.map((s, i) => (
+                <div key={i} className="ai-completed-item">{s}</div>
+              ))}
+            </div>
+            <div className="ai-completed-card">
+              <div className="ai-completed-card-title">
+                <span className="color-amber">↑</span> Areas to Improve
+              </div>
+              {feedback.improvements.map((imp, i) => (
+                <div key={i} className="ai-completed-item">{imp}</div>
+              ))}
+            </div>
           </div>
         </div>
+      )}
 
-        {/* Answer Input Area */}
-        {interviewState === "active" && (
-          <div className="interview-controls">
-            <div className={`transcript-box ${isRecording ? 'recording' : ''}`}>
-              <div className="transcript-label">
-                Your Answer
-                {isPaused && <span className="paused-indicator"> (Paused)</span>}
-              </div>
-              {isRecording && (
-                <div className="rec-badge">
-                  <div className="rec-dot"></div>
-                  REC {formatTime(timeElapsed)}
-                </div>
-              )}
-              {transcript ? (
-                <span>{transcript}</span>
-              ) : (
-                <span className="transcript-placeholder">
-                  {isRecording ? "Listening — speak your answer clearly..." : 
-                   isPaused ? "Interview paused — click resume to continue" :
-                   "Tap mic to speak or type your answer"}
-                </span>
-              )}
-            </div>
-
-            <div className="button-row">
-              <button
-                className={`mic-btn ${isRecording ? "recording" : "idle"}`}
-                onClick={isRecording ? stopRecording : startRecording}
-                disabled={isLoading || isPaused}
-              >
-                {isRecording ? "⏹" : "🎤"}
-              </button>
-              <button
-                className="send-btn"
-                onClick={sendAnswer}
-                disabled={isLoading || !transcript.trim() || isPaused}
-              >
-                {isLoading ? "Thinking..." : "Send Answer"}
-              </button>
-            </div>
-          </div>
+      {/* ── Action Bar ── */}
+      <div className="ai-action-bar">
+        {interviewState === 'ready' && (
+          <button className="ai-start-btn" onClick={startInterview}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" fill="white"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+              <line x1="12" y1="19" x2="12" y2="23" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+            Start Interview
+          </button>
         )}
-
-        {/* Interview Complete Feedback */}
-        {interviewState === "completed" && feedback && (
-          <div className="feedback-section">
-            <div className="feedback-header">
-              <h3>Interview Complete! 🎉</h3>
-              <div className="score-display">
-                <span className="score-value">{feedback.score}%</span>
-                <span className="score-label">Performance Score</span>
-              </div>
-            </div>
-            
-            <div className="feedback-content">
-              <div className="feedback-section">
-                <h4>✅ Strengths</h4>
-                <ul>
-                  {feedback.strengths.map((strength, i) => (
-                    <li key={i}>{strength}</li>
-                  ))}
-                </ul>
-              </div>
-              
-              <div className="feedback-section">
-                <h4>📈 Areas for Improvement</h4>
-                <ul>
-                  {feedback.improvements.map((improvement, i) => (
-                    <li key={i}>{improvement}</li>
-                  ))}
-                </ul>
-              </div>
-              
-              <div className="feedback-stats">
-                <span>Duration: {feedback.duration}</span>
-                <span>Questions: {questionCount}</span>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Interview Actions */}
-      <div className="interview-actions">
-        {interviewState === "ready" && (
-          <Button onClick={startInterview} className="btn-primary ripple">
-            🎤 Start Interview
-          </Button>
-        )}
-        
-        {(interviewState === "active" || interviewState === "completed") && (
-          <>
-            <Button onClick={resetInterview} className="btn-ghost">
-              🔄 New Interview
-            </Button>
-            <Button onClick={endInterview} className="btn-outline">
-              ⏹ End Interview
-            </Button>
-            {interviewState === "completed" && (
-              <Button onClick={() => window.print()} className="btn-outline">
-              📄 Export Feedback
-              </Button>
+        {(interviewState === 'active' || interviewState === 'completed') && (
+          <div className="ai-action-btns">
+            <button className="ai-ghost-btn" onClick={resetInterview}>↺ New Interview</button>
+            {interviewState === 'active' && (
+              <button className="ai-danger-btn" onClick={endInterview}>⏹ End Interview</button>
             )}
-          </>
+            {interviewState === 'completed' && (
+              <button className="ai-ghost-btn" onClick={() => window.print()}>↓ Export</button>
+            )}
+          </div>
         )}
       </div>
+
     </div>
   );
 };
