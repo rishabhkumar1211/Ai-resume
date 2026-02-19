@@ -33,6 +33,27 @@ const AIInterview = ({ resumeText }) => {
     scrollToBottom();
   }, [messages]);
 
+  // Extract user's name from resume
+  const extractUserName = useCallback(() => {
+    if (!resumeText) return "there";
+    
+    // Look for common name patterns in resume
+    const namePatterns = [
+      /^([A-Z][a-z]+ [A-Z][a-z]+)/m,  // First Last at beginning
+      /(?:name|Name):\s*([A-Z][a-z]+ [A-Z][a-z]+)/,  // Name: First Last
+      /([A-Z][a-z]+ [A-Z][a-z]+)(?:\s+.*?){0,3}(?:resume|Resume|experience|Experience)/m  // Name before resume/experience
+    ];
+    
+    for (const pattern of namePatterns) {
+      const match = resumeText.match(pattern);
+      if (match && match[1]) {
+        return match[1].split(' ')[0]; // Return first name only
+      }
+    }
+    
+    return "there";
+  }, [resumeText]);
+
   // Extract skills and technologies from resume
   const extractResumeSkills = useCallback(() => {
     if (!resumeText) return { skills: [], technologies: [], experience: [] };
@@ -321,7 +342,7 @@ const AIInterview = ({ resumeText }) => {
 
   // Text-to-speech with better voice handling
   const speakText = useCallback((text) => {
-    if (!window.speechSynthesis || isSpeaking) return;
+    if (!window.speechSynthesis) return;
     
     // Cancel any ongoing speech
     window.speechSynthesis.cancel();
@@ -355,7 +376,7 @@ const AIInterview = ({ resumeText }) => {
     };
     
     window.speechSynthesis.speak(utter);
-  }, [isSpeaking]);
+  }, []);
 
   // Enhanced speech recognition with better control
   const startRecording = useCallback(() => {
@@ -628,7 +649,8 @@ const AIInterview = ({ resumeText }) => {
     setFeedback(null);
     setAskedQuestions([]); // Reset question history for fresh start
     
-    const greeting = "Hello! I'm Alex, your AI interviewer. Let's have a conversational interview to get to know you better and discuss your experience. We'll go through some questions at your pace.";
+    const userName = extractUserName();
+    const greeting = `Hello ${userName}! I'm Alex, your AI interviewer. Let's have a conversational interview to get to know you better and discuss your experience. We'll go through some questions at your pace.`;
     
     setTimeout(() => {
       setMessages([{ 
@@ -642,7 +664,7 @@ const AIInterview = ({ resumeText }) => {
         setTimeout(() => askNextQuestion(), 3000);
       }, 400);
     }, 1000);
-  }, [speakText, askNextQuestion]);
+  }, [speakText, askNextQuestion, extractUserName]);
 
   // Pause/Resume interview
   const togglePause = useCallback(() => {
