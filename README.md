@@ -168,15 +168,3 @@ MIT License - Feel free to use this project for personal or commercial purposes.
 ---
 
 **Built with ❤️ for job seekers worldwide**
-
-
-## Stats
-
-<!-- BADGES:START -->
-<!-- BADGES:END -->
-
-
-## Changelog
-
-<!-- CHANGELOG:START -->
-<!-- CHANGELOG:END -->
